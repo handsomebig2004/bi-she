@@ -35,10 +35,6 @@ class LSTM(nn.Module):
         return x
 
 
-model = LSTM(input_size=3)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-loss_fn = nn.MSELoss()
-
 def valid_epoch(test_loader, loss_func, model):
     
     model.eval()
@@ -58,7 +54,7 @@ def valid_epoch(test_loader, loss_func, model):
     return avg_loss
 
 
-def train_LSTM(train_res_data_loader, valid_res_data_loader, optimizer, loss_fn, n_epochs, verb=1):
+def train_LSTM(train_res_data_loader, valid_res_data_loader, optimizer, loss_fn, n_epochs, model, verb=1):
 
     train_loss_list = []
     valid_loss_list = []
@@ -102,6 +98,7 @@ def train_lopo_LSTM(train_res_data_loader_list, valid_res_data_loader_list, opti
         raise TabError(f"different size for train_res_data_loader_list and valid_res_data_loader_list\n\
                         got {len(train_res_data_loader_list)} and {len(valid_res_data_loader_list)}")
     else:
+        model = LSTM(input_size=3)
         valid_loss_list = []
         for i in range(len(train_res_data_loader_list)):
             train_data_loader = train_res_data_loader_list[i]
@@ -111,6 +108,7 @@ def train_lopo_LSTM(train_res_data_loader_list, valid_res_data_loader_list, opti
                                     optimizer=optimizer,
                                     loss_fn=loss_fn,
                                     n_epochs=n_epochs,
+                                    model=model,
                                     verb=verb)
             valid_loss_list.append(valid_loss)
             print(f'valid_loss: {valid_loss}')
@@ -119,19 +117,24 @@ def train_lopo_LSTM(train_res_data_loader_list, valid_res_data_loader_list, opti
 
 if __name__ == "__main__":
     
+    model = LSTM(input_size=3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+    
     n_epochs = 20    
     
     train_lopo_LSTM(train_res_data_loader_list=train_res_data_loader_list,
                     valid_res_data_loader_list=test_res_data_loader_list,
                     optimizer=optimizer,
                     loss_fn=loss_fn,
-                    n_epochs=1,
+                    n_epochs=2,
                     verb=0)
     
     train_LSTM(train_res_data_loader=train_res_data_loader,
                valid_res_data_loader=valid_res_data_loader,
                optimizer=optimizer,
                loss_fn=loss_fn,
-               n_epochs=n_epochs)
+               n_epochs=n_epochs,
+               model=model)
     
     
