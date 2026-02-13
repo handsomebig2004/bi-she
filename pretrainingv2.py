@@ -64,9 +64,8 @@ for epoch in range(n_epochs):
 
     epoch_loss = [0 for _ in range(6)]
     n_samples = [0 for _ in range(6)]
-
-    for x_batch, y_batch, weight_batch in train_freq_data_loader:
-        
+    
+    for x_batch, y_batch, _ in train_freq_data_loader:
         for i in range(6) :
             y = feature_extraction(y_batch,i)
             y = torch.tensor(y, dtype=torch.float32)

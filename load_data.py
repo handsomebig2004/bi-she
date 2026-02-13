@@ -233,7 +233,7 @@ final_signal = np.stack([x_ecg_res, x_gsr_res, x_inf_ppg_res, x_pix_ppg_res], ax
 final_signal = final_signal.transpose(1,0,2,3)
 
 # resampled data loaders
-x_train_res_list, x_valid_res_list, x_test_res_list, y_freq_train, y_freq_valid, y_freq_test = split_data([final_signal], y_sub_categories, train_indices, valid_indices, test_indices)
+x_train_res_list, x_valid_res_list, x_test_res_list, y_freq_train, y_freq_valid, y_freq_test = split_data([final_signal], y, train_indices, valid_indices, test_indices)
 
 train_freq_data_loader = torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_freq_train, y_weight)), batch_size=32, shuffle=False)
 valid_freq_data_loader = torch.utils.data.DataLoader(list(zip(x_valid_res_list[0], y_freq_valid, y_weight)), batch_size=32, shuffle=False)
