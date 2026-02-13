@@ -125,7 +125,7 @@ for patient_index in range(NUM_PATIENTS):
         signals = np.stack([x_ecg_res[i], x_gsr_res[i], x_inf_ppg_res[i]], axis=0)
         x_all.append(signals)
 
-    x_train_res_list, _, x_test_res_list, y_res_train, _, y_res_test = split_data([x_all], y_sub_categories, train_indices_res, [], test_indices_res)
+    x_train_res_list, _, x_test_res_list, y_res_train, _, y_res_test = split_data([x_all], y, train_indices_res, [], test_indices_res)
 
     _train_res_data_loader = torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_res_train)), batch_size=32, shuffle=False)
     _test_res_data_loader = torch.utils.data.DataLoader(list(zip(x_test_res_list[0], y_res_test)), batch_size=32, shuffle=False)
@@ -169,7 +169,7 @@ for patient_index in range(NUM_PATIENTS):
     final_signal = final_signal.transpose(1,0,2,3)
 
     # resampled data loaders
-    x_train_res_list, _, x_test_res_list, y_freq_train, _, y_freq_test = split_data([final_signal], y_sub_categories, train_indices, [], test_indices)
+    x_train_res_list, _, x_test_res_list, y_freq_train, _, y_freq_test = split_data([final_signal], y, train_indices, [], test_indices)
 
     train_freq_data_loader_list.append(torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_freq_train, y_weight)), batch_size=32, shuffle=False))
     test_freq_data_loader_list.append(torch.utils.data.DataLoader(list(zip(x_test_res_list[0], y_freq_test, y_weight)), batch_size=32, shuffle=False))

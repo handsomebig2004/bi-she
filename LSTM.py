@@ -112,10 +112,10 @@ def train_lopo_LSTM(train_res_data_loader_list, valid_res_data_loader_list, opti
                                     loss_fn=loss_fn,
                                     n_epochs=n_epochs,
                                     verb=verb)
-        valid_loss_list.append(valid_loss)
-        print(f'valid_loss: {valid_loss}')
-    plt.scatter(list(range(len(train_res_data_loader_list))), valid_loss_list)
-    plt.show()
+            valid_loss_list.append(valid_loss)
+            print(f'valid_loss: {valid_loss}')
+        plt.scatter(list(range(len(train_res_data_loader_list))), valid_loss_list)
+        plt.show()
 
 if __name__ == "__main__":
     
@@ -125,7 +125,7 @@ if __name__ == "__main__":
                     valid_res_data_loader_list=test_res_data_loader_list,
                     optimizer=optimizer,
                     loss_fn=loss_fn,
-                    n_epochs=2,
+                    n_epochs=1,
                     verb=0)
     
     train_LSTM(train_res_data_loader=train_res_data_loader,
