@@ -96,14 +96,15 @@ train_indices = [x * (len(x_ecg) // NUM_PATIENTS) + i for i in range(len(x_ecg) 
 valid_indices = [x * (len(x_ecg) // NUM_PATIENTS) + i for i in range(len(x_ecg) // NUM_PATIENTS) for x in valid_indices_base]
 test_indices = [x * (len(x_ecg) // NUM_PATIENTS) + i for i in range(len(x_ecg) // NUM_PATIENTS) for x in test_indices_base]
 
-"""
 
-######################################
-####### Leave one person out #########
-######################################
+##############################################################
+####### Leave one person out for pretrained and LSTM #########
+##############################################################
 
 train_freq_data_loader_list = []
 test_freq_data_loader_list = []
+train_res_data_loader_list = []
+test_res_data_loader_list = []
 
 for patient_index in range(NUM_PATIENTS):
     train_indices_lopo = list(range(NUM_PATIENTS))
@@ -124,10 +125,13 @@ for patient_index in range(NUM_PATIENTS):
         signals = np.stack([x_ecg_res[i], x_gsr_res[i], x_inf_ppg_res[i]], axis=0)
         x_all.append(signals)
 
-    x_train_res_list, _, x_test_res_list, y_res_train, _, y_res_test = split_data([x_all], y_sub_categories, train_indices_res, [], test_indices_res)
+    x_train_res_list, _, x_test_res_list, y_res_train, _, y_res_test = split_data([x_all], y, train_indices_res, [], test_indices_res)
 
-    train_res_data_loader = torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_res_train)), batch_size=32, shuffle=False)
-    test_res_data_loader = torch.utils.data.DataLoader(list(zip(x_test_res_list[0], y_res_test)), batch_size=32, shuffle=False)
+    _train_res_data_loader = torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_res_train)), batch_size=32, shuffle=False)
+    _test_res_data_loader = torch.utils.data.DataLoader(list(zip(x_test_res_list[0], y_res_test)), batch_size=32, shuffle=False)
+    
+    train_res_data_loader_list.append(_train_res_data_loader)
+    test_res_data_loader_list.append(_test_res_data_loader)
 
     #pour x_ecg_res : 
     for i in range (len(x_ecg_res)) :
@@ -165,12 +169,11 @@ for patient_index in range(NUM_PATIENTS):
     final_signal = final_signal.transpose(1,0,2,3)
 
     # resampled data loaders
-    x_train_res_list, _, x_test_res_list, y_freq_train, _, y_freq_test = split_data([final_signal], y_sub_categories, train_indices, [], test_indices)
+    x_train_res_list, _, x_test_res_list, y_freq_train, _, y_freq_test = split_data([final_signal], y, train_indices, [], test_indices)
 
     train_freq_data_loader_list.append(torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_freq_train, y_weight)), batch_size=32, shuffle=False))
     test_freq_data_loader_list.append(torch.utils.data.DataLoader(list(zip(x_test_res_list[0], y_freq_test, y_weight)), batch_size=32, shuffle=False))
 
-"""
 
 ######################################
 ########## resampled data ############
@@ -233,7 +236,7 @@ final_signal = np.stack([x_ecg_res, x_gsr_res, x_inf_ppg_res, x_pix_ppg_res], ax
 final_signal = final_signal.transpose(1,0,2,3)
 
 # resampled data loaders
-x_train_res_list, x_valid_res_list, x_test_res_list, y_freq_train, y_freq_valid, y_freq_test = split_data([final_signal], y_sub_categories, train_indices, valid_indices, test_indices)
+x_train_res_list, x_valid_res_list, x_test_res_list, y_freq_train, y_freq_valid, y_freq_test = split_data([final_signal], y, train_indices, valid_indices, test_indices)
 
 train_freq_data_loader = torch.utils.data.DataLoader(list(zip(x_train_res_list[0], y_freq_train, y_weight)), batch_size=32, shuffle=False)
 valid_freq_data_loader = torch.utils.data.DataLoader(list(zip(x_valid_res_list[0], y_freq_valid, y_weight)), batch_size=32, shuffle=False)
