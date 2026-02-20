@@ -1,0 +1,481 @@
+# cnn_eda_loso_kmeans_foldwise.py
+# ------------------------------------------------------------
+# Fold-wise (train-only) KMeans(3) labeling + LOSO evaluation
+# - Each LOSO fold:
+#   1) Fit KMeans on TRAIN subjects' TLX scores (1D or 6D)
+#   2) Use those cluster centers to label ALL windows (train/val/test)
+#   3) Train CNN on train windows (group-aware val split inside train)
+#   4) Evaluate on the left-out subject
+# - Optional skipping:
+#   - skip subjects with too few test windows
+#   - skip subjects whose test set has <3 classes (for 3-class task)
+#
+# Requirements:
+#   - X.npy, meta.csv produced by your window builder
+#   - meta.csv must contain columns: subject, session, task
+#   - Task_Labels.csv should exist at:
+#       .\data\UNIVERSE\UN_101\Lab1\Task_Labels.csv   (and Lab2 similarly)
+#     and include "Task" plus either:
+#       - Weighted Nasa Score  (recommended for 1D KMeans)
+#       - or the 6 TLX dimensions (for 6D KMeans)
+# ------------------------------------------------------------
+
+import os
+from pathlib import Path
+from typing import Dict, Tuple, List, Optional
+
+import numpy as np
+import pandas as pd
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+
+from sklearn.cluster import KMeans
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.metrics import f1_score, balanced_accuracy_score, confusion_matrix
+
+
+# ---------------- Dataset ----------------
+class NpyWindowDataset(Dataset):
+    def __init__(self, X: np.ndarray, y: np.ndarray):
+        assert X.ndim == 2, f"Expected X shape [N,T], got {X.shape}"
+        self.X = X.astype(np.float32)
+        self.y = y.astype(np.int64)
+
+    def __len__(self):
+        return int(self.y.shape[0])
+
+    def __getitem__(self, idx):
+        x = self.X[idx]              # [T]
+        x = np.expand_dims(x, 0)     # [1, T]
+        return torch.from_numpy(x), torch.tensor(self.y[idx], dtype=torch.long)
+
+
+# ---------------- Model ----------------
+class SimpleCNN1D(nn.Module):
+    def __init__(self, n_classes=3):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(1, 16, kernel_size=7, padding=3),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(16, 32, kernel_size=7, padding=3),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(32, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+
+            nn.AdaptiveAvgPool1d(1),  # [B,64,1]
+        )
+        self.head = nn.Linear(64, n_classes)
+
+    def forward(self, x):
+        h = self.net(x).squeeze(-1)  # [B,64]
+        return self.head(h)          # [B,3]
+
+
+# ---------------- Metrics helpers ----------------
+def compute_class_weights(y: np.ndarray, n_classes=3) -> torch.Tensor:
+    counts = np.bincount(y, minlength=n_classes).astype(np.float32)
+    w = 1.0 / np.maximum(counts, 1.0)
+    w = w * (n_classes / w.sum())
+    return torch.tensor(w, dtype=torch.float32)
+
+@torch.no_grad()
+def evaluate(model, loader, device, n_classes=3):
+    model.eval()
+    y_true, y_pred = [], []
+    for x, y in loader:
+        x = x.to(device)
+        logits = model(x)
+        pred = torch.argmax(logits, dim=1).cpu().numpy()
+        y_true.append(y.numpy())
+        y_pred.append(pred)
+
+    y_true = np.concatenate(y_true)
+    y_pred = np.concatenate(y_pred)
+
+    macro_f1 = f1_score(
+        y_true, y_pred,
+        average="macro",
+        labels=list(range(n_classes)),
+        zero_division=0
+    )
+    bal_acc = balanced_accuracy_score(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(n_classes)))
+    return float(macro_f1), float(bal_acc), cm
+
+
+# ---------------- TLX score loading ----------------
+def find_task_labels_csv(universe_root: Path, subject: str, session: str) -> Path:
+    p = universe_root / subject / session / "Task_Labels.csv"
+    if not p.exists():
+        raise FileNotFoundError(f"Task_Labels.csv not found: {p}")
+    return p
+
+def _pick_weighted_col(columns: List[str]) -> Optional[str]:
+    # common variants seen in UNIVERSE tooling / exports
+    candidates = [
+        "Weighted Nasa Score",
+        "Weighted NASA Score",
+        "Weighted_Nasa_Score",
+        "Weighted_NASA_Score",
+        "weighted_nasa_score",
+        "weighted_score",
+        "WeightedScore",
+        "NASA_TLX_Weighted",
+    ]
+    for c in candidates:
+        if c in columns:
+            return c
+    # try case-insensitive match
+    lower_map = {c.lower(): c for c in columns}
+    for c in candidates:
+        if c.lower() in lower_map:
+            return lower_map[c.lower()]
+    return None
+
+def _pick_tlx6_cols(columns: List[str]) -> Optional[List[str]]:
+    # canonical TLX 6 dimensions
+    candidates = [
+        ["Mental Demand", "Physical Demand", "Temporal Demand", "Performance", "Effort", "Frustration"],
+        ["mental_demand", "physical_demand", "temporal_demand", "performance", "effort", "frustration"],
+        ["mental", "physical", "temporal", "performance", "effort", "frustration"],
+    ]
+    cols_set = set(columns)
+    for cand in candidates:
+        if all(c in cols_set for c in cand):
+            return cand
+
+    # case-insensitive fallback
+    lower_map = {c.lower(): c for c in columns}
+    for cand in candidates:
+        if all(c.lower() in lower_map for c in cand):
+            return [lower_map[c.lower()] for c in cand]
+    return None
+
+def build_task_score_map(meta: pd.DataFrame,
+                         universe_root: Path,
+                         score_mode: str = "weighted") -> Dict[Tuple[str, str, str], np.ndarray]:
+    """
+    Returns dict: (subject, session, task) -> vec
+      score_mode="weighted" -> 1D vector [1] using Weighted TLX if available, else fallback mean6
+      score_mode="mean6"    -> 1D vector [1] = mean of 6D TLX
+      score_mode="vec6"     -> 6D vector [6]
+    """
+    keyset = set(zip(meta["subject"].astype(str),
+                     meta["session"].astype(str),
+                     meta["task"].astype(str)))
+
+    cache: Dict[Tuple[str, str], pd.DataFrame] = {}
+    out: Dict[Tuple[str, str, str], np.ndarray] = {}
+
+    for (sub, ses, task) in keyset:
+        if (sub, ses) not in cache:
+            csv_path = find_task_labels_csv(universe_root, sub, ses)
+            df = pd.read_csv(csv_path)
+            cache[(sub, ses)] = df
+        else:
+            df = cache[(sub, ses)]
+
+        if "Task" not in df.columns:
+            continue
+
+        row = df[df["Task"].astype(str) == str(task)]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+
+        # Decide what to extract
+        if score_mode == "weighted":
+            wcol = _pick_weighted_col(list(df.columns))
+            if wcol is not None:
+                try:
+                    out[(sub, ses, task)] = np.array([float(r[wcol])], dtype=np.float32)
+                    continue
+                except Exception:
+                    pass
+            # fallback to mean6
+            score_mode_eff = "mean6"
+        else:
+            score_mode_eff = score_mode
+
+        cols6 = _pick_tlx6_cols(list(df.columns))
+        if cols6 is None:
+            continue
+        try:
+            vec6 = np.array([float(r[c]) for c in cols6], dtype=np.float32)
+        except Exception:
+            continue
+
+        if score_mode_eff == "vec6":
+            out[(sub, ses, task)] = vec6
+        else:
+            out[(sub, ses, task)] = np.array([float(vec6.mean())], dtype=np.float32)
+
+    return out
+
+
+# ---------------- Fold-wise KMeans labeling ----------------
+def make_fold_labels_kmeans(meta: pd.DataFrame,
+                            task_score_map: Dict[Tuple[str, str, str], np.ndarray],
+                            train_subjects: set,
+                            n_clusters: int = 3,
+                            random_state: int = 42) -> Tuple[np.ndarray, Dict]:
+    """
+    Fit KMeans on TRAIN subjects' task vectors only, then label all windows by their task's cluster.
+
+    Returns:
+      y_fold: [N_windows] in {0,1,2}, missing -> -1
+      info: dict with thresholds/centers mapping info for debugging/report
+    """
+    # gather training task vectors
+    train_vecs = []
+    for (sub, ses, task), v in task_score_map.items():
+        if sub in train_subjects:
+            train_vecs.append(v)
+    if len(train_vecs) < n_clusters * 3:
+        raise RuntimeError(f"Too few training tasks ({len(train_vecs)}) for KMeans({n_clusters}).")
+
+    Xtr = np.stack(train_vecs, axis=0)  # [n_tasks, d]
+
+    km = KMeans(n_clusters=n_clusters, n_init="auto", random_state=random_state)
+    km.fit(Xtr)
+
+    centers = km.cluster_centers_  # [k, d]
+    center_score = centers.mean(axis=1)  # 1D score to rank clusters (works for d=1 or d=6)
+    order = np.argsort(center_score)     # small -> large
+
+    # cluster id -> ordered label 0/1/2
+    cluster_to_label = {int(order[i]): int(i) for i in range(n_clusters)}
+
+    y_fold = np.full((len(meta),), -1, dtype=np.int64)
+    for i, r in meta.iterrows():
+        key = (str(r["subject"]), str(r["session"]), str(r["task"]))
+        v = task_score_map.get(key, None)
+        if v is None:
+            continue
+        cid = int(km.predict(v.reshape(1, -1))[0])
+        y_fold[i] = cluster_to_label[cid]
+
+    info = {
+        "centers": centers,
+        "center_score": center_score,
+        "order": order,
+        "cluster_to_label": cluster_to_label,
+    }
+    return y_fold, info
+
+
+# ---------------- Training one LOSO fold ----------------
+def train_one_fold(X: np.ndarray, y: np.ndarray, groups: np.ndarray,
+                   test_subject: str, seed: int = 0,
+                   epochs: int = 30, lr: float = 1e-3, batch_size: int = 64):
+
+    test_mask = (groups == test_subject)
+    train_mask = ~test_mask
+
+    X_train_all, y_train_all, g_train_all = X[train_mask], y[train_mask], groups[train_mask]
+    X_test, y_test = X[test_mask], y[test_mask]
+
+    # group-aware val split inside train subjects
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
+    tr_idx, va_idx = next(gss.split(X_train_all, y_train_all, groups=g_train_all))
+
+    X_tr, y_tr = X_train_all[tr_idx], y_train_all[tr_idx]
+    X_va, y_va = X_train_all[va_idx], y_train_all[va_idx]
+
+    train_loader = DataLoader(NpyWindowDataset(X_tr, y_tr), batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader   = DataLoader(NpyWindowDataset(X_va, y_va), batch_size=256, shuffle=False, num_workers=0)
+    test_loader  = DataLoader(NpyWindowDataset(X_test, y_test), batch_size=256, shuffle=False, num_workers=0)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(seed)
+    model = SimpleCNN1D(n_classes=3).to(device)
+
+    class_w = compute_class_weights(y_tr, n_classes=3).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_w)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    best_val_f1 = -1.0
+    best_state = None
+
+    for _ in range(epochs):
+        model.train()
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(xb), yb)
+            loss.backward()
+            optimizer.step()
+
+        val_f1, _, _ = evaluate(model, val_loader, device, n_classes=3)
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    test_f1, test_ba, cm = evaluate(model, test_loader, device, n_classes=3)
+    return float(best_val_f1), float(test_f1), float(test_ba), cm, int(len(y_test))
+
+
+# ---------------- Main: LOSO + fold-wise KMeans ----------------
+def main():
+    # ---------------- CONFIG ----------------
+    # Where your windows are saved
+    data_dir = Path(r".\data\UNIVERSE\windows_eda_60s30s")  # change if needed
+    X_path = data_dir / "X.npy"
+    meta_path = data_dir / "meta.csv"
+
+    # Universe root (for reading Task_Labels.csv)
+    universe_root = Path(r".\data\UNIVERSE")  # change if needed
+
+    # KMeans settings
+    score_mode = "weighted"  # "weighted" (1D), "mean6" (1D), or "vec6" (6D)
+    kmeans_random_state = 42
+
+    # LOSO + training settings
+    epochs = 30
+    lr = 1e-3
+    batch_size = 64
+
+    # Skip rules (recommended)
+    min_test_windows = 50
+    require_classes = 3  # for 3-class task; set to 2 if you want to allow missing class folds
+
+    # Output files
+    out_kept = data_dir / f"loso_kmeans_foldwise_kept_{score_mode}.csv"
+    out_skipped = data_dir / f"loso_kmeans_foldwise_skipped_{score_mode}.csv"
+
+    # ---------------- LOAD ----------------
+    assert X_path.exists() and meta_path.exists(), f"Missing X.npy/meta.csv in {data_dir}"
+    X = np.load(X_path)  # [N, T]
+    meta = pd.read_csv(meta_path)
+
+    # If you already have y.npy but want fold-wise labels, we ignore y.npy here.
+    # meta must have subject/session/task
+    for col in ["subject", "session", "task"]:
+        if col not in meta.columns:
+            raise ValueError(f"meta.csv must contain column '{col}'")
+
+    groups = meta["subject"].astype(str).values
+    subjects = np.unique(groups)
+
+    print("Total windows:", len(meta), "T:", X.shape[1])
+    print("Total subjects:", len(subjects))
+
+    # build (sub,ses,task)->score/vec map once (scores are from TLX tables, not from windows)
+    task_score_map = build_task_score_map(meta, universe_root, score_mode=score_mode)
+    print("Task-score entries:", len(task_score_map))
+
+    kept_rows = []
+    skipped_rows = []
+    cm_sum = np.zeros((3, 3), dtype=np.int64)
+
+    # ---------------- LOSO loop ----------------
+    for i, test_sub in enumerate(subjects, 1):
+        # fold-wise KMeans labeling (fit on train subjects only)
+        train_subjects = set(subjects.tolist()) - {test_sub}
+        try:
+            y_fold, km_info = make_fold_labels_kmeans(
+                meta=meta,
+                task_score_map=task_score_map,
+                train_subjects=train_subjects,
+                n_clusters=3,
+                random_state=kmeans_random_state
+            )
+        except Exception as e:
+            skipped_rows.append({
+                "subject": test_sub,
+                "reason": f"kmeans_fit_failed: {type(e).__name__}: {e}",
+                "n_test": int(np.sum(groups == test_sub)),
+                "classes": np.unique([]).tolist()
+            })
+            print(f"[{i:02d}/{len(subjects)}] subject={test_sub} SKIP (kmeans fit failed: {e})")
+            continue
+
+        # drop windows with missing fold label
+        keep = (y_fold >= 0)
+        X2 = X[keep]
+        y2 = y_fold[keep]
+        groups2 = groups[keep]
+
+        # Apply skip rules on test subject after labeling + filtering
+        test_mask2 = (groups2 == test_sub)
+        n_test = int(np.sum(test_mask2))
+        uniq = np.unique(y2[test_mask2]) if n_test > 0 else np.array([])
+
+        if n_test < min_test_windows:
+            skipped_rows.append({
+                "subject": test_sub,
+                "reason": f"n_test<{min_test_windows}",
+                "n_test": n_test,
+                "classes": uniq.tolist()
+            })
+            print(f"[{i:02d}/{len(subjects)}] subject={test_sub} SKIP (n_test={n_test} < {min_test_windows})")
+            continue
+
+        if len(uniq) < require_classes:
+            skipped_rows.append({
+                "subject": test_sub,
+                "reason": f"unique_classes<{require_classes}",
+                "n_test": n_test,
+                "classes": uniq.tolist()
+            })
+            print(f"[{i:02d}/{len(subjects)}] subject={test_sub} SKIP (classes={uniq.tolist()})")
+            continue
+
+        # Train & test
+        best_val_f1, test_f1, test_ba, cm, n_test2 = train_one_fold(
+            X2, y2, groups2, test_subject=test_sub,
+            seed=1000 + i, epochs=epochs, lr=lr, batch_size=batch_size
+        )
+        cm_sum += cm
+
+        kept_rows.append({
+            "subject": test_sub,
+            "n_test": n_test2,
+            "classes": uniq.tolist(),
+            "val_best_macroF1": best_val_f1,
+            "test_macroF1": test_f1,
+            "test_balAcc": test_ba,
+            # (optional) record fold kmeans center scores (small->large)
+            "kmeans_center_scores": ",".join([f"{v:.4f}" for v in km_info["center_score"].tolist()]),
+        })
+
+        print(f"[{i:02d}/{len(subjects)}] subject={test_sub} "
+              f"testF1={test_f1:.3f} balAcc={test_ba:.3f} (n_test={n_test2})")
+
+    kept_df = pd.DataFrame(kept_rows)
+    skipped_df = pd.DataFrame(skipped_rows)
+    kept_df.to_csv(out_kept, index=False)
+    skipped_df.to_csv(out_skipped, index=False)
+
+    print("\n=== LOSO Summary (KEPT folds only) ===")
+    print(f"Kept folds: {len(kept_df)} / {len(subjects)}")
+    print(f"Skipped folds: {len(skipped_df)} / {len(subjects)}")
+
+    if len(kept_df) == 0:
+        print("No folds kept. Relax thresholds or check Task_Labels coverage.")
+        return
+
+    mean_f1 = kept_df["test_macroF1"].mean()
+    std_f1 = kept_df["test_macroF1"].std(ddof=1) if len(kept_df) > 1 else 0.0
+    mean_ba = kept_df["test_balAcc"].mean()
+    std_ba = kept_df["test_balAcc"].std(ddof=1) if len(kept_df) > 1 else 0.0
+
+    print(f"macroF1: {mean_f1:.3f} ± {std_f1:.3f}")
+    print(f"balAcc : {mean_ba:.3f} ± {std_ba:.3f}")
+    print("Confusion sum (kept folds):\n", cm_sum)
+    print("Saved:")
+    print(" -", out_kept)
+    print(" -", out_skipped)
+
+
+if __name__ == "__main__":
+    main()
