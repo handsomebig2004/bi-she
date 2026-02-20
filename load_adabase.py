@@ -53,27 +53,7 @@ signal_columns=['RAW_ECG_I',
 'LEFT_GAZE_ORIGIN_IN_TRACKBOX_COORDINATE_SYSTEM_Z',
 'RIGHT_GAZE_ORIGIN_IN_TRACKBOX_COORDINATE_SYSTEM_X',
 'RIGHT_GAZE_ORIGIN_IN_TRACKBOX_COORDINATE_SYSTEM_Y',
-'RIGHT_GAZE_ORIGIN_IN_TRACKBOX_COORDINATE_SYSTEM_Z',
-'AU01',
-'AU02',
-'AU04',
-'AU05',
-'AU06',
-'AU07',
-'AU09',
-'AU10',
-'AU11',
-'AU12',
-'AU14',
-'AU15',
-'AU17',
-'AU20',
-'AU23',
-'AU24',
-'AU25',
-'AU26',
-'AU28',
-'AU43']
+'RIGHT_GAZE_ORIGIN_IN_TRACKBOX_COORDINATE_SYSTEM_Z',]
 eye_columns=signal_columns[6: -1]
 
 
@@ -131,6 +111,8 @@ y_subcategories=[]
 y_weights=[]
 
 
+
+print('loading files')
 for patient_number in range(NUM_PATIENTS):
 
     file_name = file_names[patient_number]
@@ -141,6 +123,7 @@ for patient_number in range(NUM_PATIENTS):
     df_subjective = pd.read_hdf(file_path, "SUBJECTIVE", mode="r")
 
     frag_length = 30
+    print(f'loaded patient n° {patient_number}')
     
 
     #number of inputs (adabase is indexed by a timestamp in milliseconds)
@@ -163,7 +146,7 @@ for patient_number in range(NUM_PATIENTS):
 
         current_val=df_signals[['STUDY', 'PHASE', 'LEVEL']].iloc[current_idx]
         mask=(df_signals[['STUDY', 'PHASE', 'LEVEL']].iloc[current_idx:] != current_val).any(axis=1)
-        next_trial_change=mask.argmax() if id!=current_val else np.inf
+        next_trial_change=mask.argmax() if mask.argmax()!=current_idx else np.inf
         end_idx=min(0+n_input, n_events, next_trial_change)
 
         while current_idx<n_input-1:
@@ -183,13 +166,17 @@ for patient_number in range(NUM_PATIENTS):
                                                         'MENTAL',
                                                         'PERFORMANCE',
                                                         'PHYSICAL',
-                                                        'TEMPORAL']].iloc[current_trial == df_subjective[['STUDY', 'PHASE', 'LEVEL']]].astype(np.float32).to_numpy().transpose())
+                                                        'TEMPORAL']].loc[(current_trial['STUDY'] == df_subjective['STUDY']) &
+                                                                         (current_trial['PHASE'] == df_subjective['PHASE']) &
+                                                                         (current_trial['LEVEL'] == df_subjective['LEVEL'])].astype(np.float32).to_numpy().transpose())
                 y_weights.append(df_subjective[['WEIGHT EFFORT',
                                                 'WEIGHT FRUSTRATION',
                                                 'WEIGHT MENTAL',
                                                 'WEIGHT PERFORMANCE',
                                                 'WEIGHT PHYSICAL',
-                                                'WEIGHT TEMPORAL']].iloc[current_trial == df_subjective[['STUDY', 'PHASE', 'LEVEL']]].astype(np.float32).to_numpy().transpose())
+                                                'WEIGHT TEMPORAL']].loc[(current_trial['STUDY'] == df_subjective['STUDY']) &
+                                                                        (current_trial['PHASE'] == df_subjective['PHASE']) &
+                                                                        (current_trial['LEVEL'] == df_subjective['LEVEL'])].astype(np.float32).to_numpy().transpose())
 
                 y_done=True
 
@@ -201,7 +188,8 @@ for patient_number in range(NUM_PATIENTS):
 
     
         x_list[i].append(signal_list.copy())
-
+        x_list_res[i].append(signal_list_resampled.copy())
+print('loaded and formatted all files')
 
 x_signal_l_norm=[]
 for x in x_list:
@@ -223,9 +211,14 @@ test_indices_res = [x * (len(x_list_res[0]) // NUM_PATIENTS) + i for i in range(
 
 
 x_all=[]
+for i in range(len(x_list[0])):
+    signals=np.stack([s[i] for s in x_list], axis=0)
+    x_all.append(signals)
+
+x_all_res=[]
 for i in range(len(x_list_res[0])):
     signals=np.stack([s[i] for s in x_list_res], axis=0)
-    x_all.append(signals)
+    x_all_res.append(signals)
 
 ######################################
 ########## resampled data ############
