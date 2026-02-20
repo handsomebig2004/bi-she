@@ -2,4 +2,4 @@ data/UNIVERSE
 __pycache__
 *.pyc
 splits_maus
-.h5py
+*.h5py
