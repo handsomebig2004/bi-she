@@ -4,31 +4,66 @@ from torchvision import models
 from load_data import train_freq_data_loader, valid_freq_data_loader, test_freq_data_loader
 import matplotlib.pyplot as plt
 
-model = models.resnet18(weights='DEFAULT')
-model.conv1 = nn.Conv2d(4,64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3))
-model.fc = torch.nn.Linear(in_features=512, out_features=1)
+models_list = []
+optimizer_list = []
+loss_list = []
 
-for param in model.parameters():
+def feature_extraction(y_batch,i) :
+    res = []
+    for sample in y_batch : 
+        res.append(sample[i])
+    return res
+
+
+resnet = models.resnet18(weights='DEFAULT')
+resnet.conv1 = nn.Conv2d(4,64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3))
+resnet.fc = torch.nn.Linear(in_features=512, out_features=1)
+
+for param in resnet.parameters():
     param.requires_grad = False
 
-for param in model.fc.parameters():
+for param in resnet.fc.parameters():
 	param.requires_grad = True
 
+class FCNModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # separates all features in separate branches 
+        self.branches = nn.ModuleList([resnet for _ in range(6)])
+
+
+    def forward(self, x_batch, weight_batch):
+
+        branch_outputs = []
+
+        for branch in self.branches:
+            branch_outputs.append(branch(x_batch))  
+
+        branch_outputs = torch.stack(branch_outputs).float()
+        branch_outputs = branch_outputs.permute(1, 0, 2)
+        weights = weight_batch.float().unsqueeze(-1)
+        weighted = (branch_outputs * weights).sum(dim=1) / weights.sum(dim=1)
+
+        return weighted   
+
+model = FCNModel()
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
 n_epochs = 50
 
 train_loss_list = []
 valid_loss_list = []
 
+
 def valid_epoch(test_loader, loss_func, model):
-    
     model.eval()
     tot_loss, n_samples=0,0
     with torch.no_grad():
-        for x_batch, y_batch in test_loader:
+        for x_batch, y_batch, weight_batch in test_loader:
 
-            preds = model(x_batch)
+            preds = model(x_batch, weight_batch)
 
             loss = loss_func(preds.squeeze(), y_batch)
             
@@ -39,14 +74,13 @@ def valid_epoch(test_loader, loss_func, model):
     valid_loss_list.append(avg_loss)
     return avg_loss
 
-epoch_loss = 0
-n_samples = 0
-
 for epoch in range(n_epochs):
-    for x_batch, y_batch in train_freq_data_loader:
+    epoch_loss = 0
+    n_samples = 0
+    for x_batch, y_batch, weight_batch in train_freq_data_loader:
         model.train()
         optimizer.zero_grad()
-        outputs = model(x_batch)
+        outputs = model(x_batch, weight_batch)
         loss = criterion(outputs.squeeze(), y_batch)
         loss.backward()
         optimizer.step()

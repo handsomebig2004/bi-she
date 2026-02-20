@@ -152,7 +152,6 @@ def epoch_valid(_net, valid_loader, loss_func):
             n_samples += y.size(0)
             tot_loss += loss.item() * y.size(0)
 
-    _net.train()
     avg_loss = tot_loss / n_samples if n_samples > 0 else 0.0
     return avg_loss
 
@@ -180,6 +179,7 @@ def train(_net, train_loader, valid_loader, loss_func, optim, n_epochs):
         a tuple containg the lists of training and validation losses over the epochs
     """
     train_loss_list, valid_loss_list=[],[]
+    _net.train()
 
     for epoch in range(n_epochs):
         t_start=t.time()
@@ -191,6 +191,7 @@ def train(_net, train_loader, valid_loader, loss_func, optim, n_epochs):
         with torch.no_grad():
             #valid ation
             valid_loss = epoch_valid(_net, valid_loader, loss_func)
+            _net.train()
             valid_loss_list.append(valid_loss)
         t_end=t.time()
         print(f'Epoch {epoch}:  train loss {train_loss}, valid loss {valid_loss}')
@@ -221,6 +222,5 @@ def test_model(_net, test_loader, loss_func):
             n_samples += y.size(0)
             tot_loss += loss.item() * y.size(0)
 
-    _net.train()
     avg_loss = tot_loss / n_samples if n_samples > 0 else 0.0
     return avg_loss

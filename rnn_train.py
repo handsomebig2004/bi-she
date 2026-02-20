@@ -76,6 +76,7 @@ def main():
             if os.path.exists(tlx_path):
                 # same as your fcn_main.py: iloc[0:6, 1:7].to_numpy().transpose()
                 # -> each 'trial' is a length-6 vector
+                
                 tlx_trials = pd.read_csv(tlx_path).iloc[0:6, 1:7].to_numpy().transpose().astype(np.float32)
 
                 for tlx_vec in tlx_trials:
