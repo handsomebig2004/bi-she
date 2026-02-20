@@ -93,14 +93,16 @@ def train_LSTM(train_res_data_loader, valid_res_data_loader, optimizer, loss_fn,
     
     return valid_loss
     
-def train_lopo_LSTM(train_res_data_loader_list, valid_res_data_loader_list, optimizer, loss_fn, n_epochs, verb=1):
+def train_lopo_LSTM(train_res_data_loader_list, valid_res_data_loader_list, n_epochs, verb=1):
     if len(train_res_data_loader_list) != len(valid_res_data_loader_list):
         raise TabError(f"different size for train_res_data_loader_list and valid_res_data_loader_list\n\
                         got {len(train_res_data_loader_list)} and {len(valid_res_data_loader_list)}")
     else:
-        model = LSTM(input_size=3)
         valid_loss_list = []
         for i in range(len(train_res_data_loader_list)):
+            model = LSTM(input_size=3)
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+            loss_fn = nn.MSELoss()
             train_data_loader = train_res_data_loader_list[i]
             test_data_loader = test_res_data_loader_list[i]
             valid_loss = train_LSTM(train_res_data_loader=train_data_loader,
@@ -125,9 +127,7 @@ if __name__ == "__main__":
     
     train_lopo_LSTM(train_res_data_loader_list=train_res_data_loader_list,
                     valid_res_data_loader_list=test_res_data_loader_list,
-                    optimizer=optimizer,
-                    loss_fn=loss_fn,
-                    n_epochs=2,
+                    n_epochs=10,
                     verb=0)
     
     train_LSTM(train_res_data_loader=train_res_data_loader,
@@ -136,5 +136,4 @@ if __name__ == "__main__":
                loss_fn=loss_fn,
                n_epochs=n_epochs,
                model=model)
-    
     
