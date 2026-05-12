@@ -1,5 +1,9 @@
-data/UNIVERSE
+data
 __pycache__
 *.pyc
 splits_maus
 *.h5py
+modified_features
+results
+.vscode
+graph
