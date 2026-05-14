@@ -1,3 +1,4 @@
+import argparse
 import glob
 import pickle
 from pathlib import Path
@@ -147,19 +148,32 @@ def user_zscore_normalize(
     return x_norm.astype(np.float32)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Build UNIVERSE BVP windows.")
+    parser.add_argument("--universe-root", type=Path, default=Path(r"./data/UNIVERSE"))
+    parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument("--win-s", type=int, default=60)
+    parser.add_argument("--hop-s", type=int, default=30)
+    parser.add_argument("--label-dir", type=Path, default=None)
+    return parser.parse_args()
+
+
 def main():
-    universe_root = Path(r"./data/UNIVERSE")
-    out_dir = universe_root / "windows_bvp_60s30s"
+    args = parse_args()
+    universe_root = args.universe_root
+    out_dir = args.out_dir
+    if out_dir is None:
+        out_dir = universe_root / f"windows_bvp_{args.win_s}s{args.hop_s}s"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    clustered_labels_dir = universe_root / "clustered_labels_6d"
+    clustered_labels_dir = args.label_dir or (universe_root / "clustered_labels_6d")
 
     # BVP sampling rate
     fs = 64
-    win_s = 60
-    hop_s = 30
-    win = fs * win_s   # 3840
-    hop = fs * hop_s   # 1920
+    win_s = args.win_s
+    hop_s = args.hop_s
+    win = fs * win_s
+    hop = fs * hop_s
 
     sessions = ["Lab1", "Lab2"]
 
